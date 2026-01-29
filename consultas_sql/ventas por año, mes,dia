@@ -1,0 +1,52 @@
+/*total venta por sucursal por fecha, mes, año*/
+
+   SELECT
+   EXTRACT(YEAR FROM M."FECHA") AS ANHO,
+   EXTRACT(MONTH FROM M."FECHA") AS NMES,
+   	TRIM(CASE EXTRACT(MONTH FROM M.FECHA)
+        WHEN 1 THEN 'Enero'
+        WHEN 2 THEN 'Febrero'
+        WHEN 3 THEN 'Marzo'
+        WHEN 4 THEN 'Abril'
+        WHEN 5 THEN 'Mayo'
+        WHEN 6 THEN 'Junio'
+        WHEN 7 THEN 'Julio'
+        WHEN 8 THEN 'Agosto'
+        WHEN 9 THEN 'Septiembre'
+        WHEN 10 THEN 'Octubre'
+        WHEN 11 THEN 'Noviembre'
+        WHEN 12 THEN 'Diciembre'
+    END) AS MES,
+   EXTRACT(DAY FROM M."FECHA") AS DIA,
+       TRIM(CASE EXTRACT(WEEKDAY FROM M.FECHA)
+    	WHEN 0 THEN 'Domingo'
+    	WHEN 1 THEN 'Lunes'
+        WHEN 2 THEN 'Martes'
+        WHEN 3 THEN 'Miércoles'
+        WHEN 4 THEN 'Jueves'
+        WHEN 5 THEN 'Viernes'
+        WHEN 6 THEN 'Sábado'
+    END) AS DIA_SEMANA,
+   CAST (M.FECHA AS DATE) AS FECHA,
+   s.NOMBRE as sucursal,
+        ROUND(SUM(CASE
+            WHEN t.tipo = 2 THEN
+            ((DM.exenta + DM.gravada + DM.impuesto) - (DM.descuento * DM.cantidad))
+            ELSE
+            ((DM.exenta + DM.gravada + DM.impuesto) - (DM.descuento * DM.cantidad)) * -1
+        END),0) as monto
+    FROM detallemovimiento DM
+    INNER JOIN movimientos M ON (M.idmovimiento = DM.idmovimiento)
+    INNER JOIN tipomovimiento T ON (t.idtipomovimiento = M.idtipomovimiento)
+    INNER JOIN articulo ar ON (ar.idarticulo = DM.idarticulo)
+    INNER JOIN linea li ON (li.idlinea = ar.idlinea)
+    LEFT JOIN sucursal s ON (s.idsucursal = M.idsucursal)
+    WHERE t.tipo IN (2)
+    AND M.fecha BETWEEN :desde AND :hasta
+    AND M.Estado <> 'A'
+    /*AND M.idtipomovimiento <> 62*/
+    AND s.idsucursal= 16
+    GROUP BY
+    	M.fecha,
+    	s.NOMBRE
+    ORDER BY M.fecha asc;
