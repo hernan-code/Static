@@ -1,0 +1,35 @@
+SELECT 
+    server_origen,
+    anho,
+    idsucursal,
+    sucursal,
+
+    SUM(CASE WHEN nmes = 1 THEN total_importe ELSE 0 END) AS enero,
+    SUM(CASE WHEN nmes = 2 THEN total_importe ELSE 0 END) AS febrero,
+    SUM(CASE WHEN nmes = 3 THEN total_importe ELSE 0 END) AS marzo,
+    SUM(CASE WHEN nmes = 4 THEN total_importe ELSE 0 END) AS abril,
+    SUM(CASE WHEN nmes = 5 THEN total_importe ELSE 0 END) AS mayo,
+    SUM(CASE WHEN nmes = 6 THEN total_importe ELSE 0 END) AS junio,
+    SUM(CASE WHEN nmes = 7 THEN total_importe ELSE 0 END) AS julio,
+    SUM(CASE WHEN nmes = 8 THEN total_importe ELSE 0 END) AS agosto,
+    SUM(CASE WHEN nmes = 9 THEN total_importe ELSE 0 END) AS septiembre,
+    SUM(CASE WHEN nmes = 10 THEN total_importe ELSE 0 END) AS octubre,
+    SUM(CASE WHEN nmes = 11 THEN total_importe ELSE 0 END) AS noviembre,
+    SUM(CASE WHEN nmes = 12 THEN total_importe ELSE 0 END) AS diciembre,
+
+    SUM(total_importe) AS total_anual
+
+FROM info.ventas_movimientos
+-- Si quieres solo 2025 deja esta línea
+-- WHERE anho = 2025
+
+GROUP BY 
+    server_origen,
+    anho,
+    idsucursal, 
+    sucursal
+
+ORDER BY 
+    server_origen,
+    anho,
+    sucursal;
