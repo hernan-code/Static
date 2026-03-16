@@ -1,1 +1,223 @@
+# Fase 2: Detectar tareas nuevas y avisar por email
+
+import os, json, time, smtplib, pickle
+from datetime import datetime
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
+
+import psycopg2
+import requests
+
+
+# Conexión a la base de datos
+def conectar_db():
+    return psycopg2.connect(
+        host="localhost",
+        database="classroom_bot",
+        user="classroom_user",
+        password="classroom123"
+    )
+def pedir_ayuda_claude(titulo, descripcion):
+    print(f">>> Llamando a Gemini para: {titulo}")
+    from google import genai
+
+    API_KEY = "AIzaSyC_q43Re9j2rBnpNk6Zwrt1Oznl8BlIpXY"
+
+    try:
+        client = genai.Client(api_key=API_KEY)
+        respuesta = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=f"Soy alumno universitario. Mi profesor publicó esta tarea:\n\nTítulo: {titulo}\nDescripción: {descripcion}\n\nDame un plan paso a paso concreto para realizarla bien."
+        )
+        print("GEMINI RESPONDIO:", respuesta.text[:100])
+        return respuesta.text
+    except Exception as e:
+        print(f"Error Gemini: {e}")
+        return "No se pudo obtener sugerencias."
+
+# CONFIGURACIÓN — editá solo estas líneas
+
+EMAIL            = "hernan969kk@gmail.com"
+CONTRASENA_APP   = "ynmlsuxfnbxrhlkk"   # la que acabás de copiar
+INTERVALO_MINUTOS = 60
+
+MIS_MATERIAS = [
+    "Ingenieria del Software 1",
+    "Organización 1 - 2026",
+    "Informática 5 - 2026",
+]
+
+
+SCOPES = [
+    "https://www.googleapis.com/auth/classroom.courses.readonly",
+    "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
+]
+
+def autenticar():
+    creds = None
+    if os.path.exists("token.pickle"):
+        with open("token.pickle", "rb") as f:
+            creds = pickle.load(f)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open("token.pickle", "wb") as f:
+            pickle.dump(creds, f)
+    return build("classroom", "v1", credentials=creds)
+
+def enviar_email(tarea, curso_nombre, ayuda=""):
+    titulo      = tarea.get("title", "Sin título")
+    descripcion = tarea.get("description", "Sin descripción")
+    enlace      = tarea.get("alternateLink", "#")
+
+    fecha = "Sin fecha límite"
+    if "dueDate" in tarea:
+        d = tarea["dueDate"]
+        fecha = f"{d.get('day','')}/{d.get('month','')}/{d.get('year','')}"
+
+    html = f"""
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #ddd;border-radius:10px;overflow:hidden">
+      <div style="background:#1a73e8;color:white;padding:20px">
+        <h2 style="margin:0"> Nueva tarea publicada</h2>
+        <p style="margin:5px 0 0;opacity:0.85">{curso_nombre}</p>
+      </div>
+      <div style="padding:20px">
+        <h3 style="color:#1a73e8">{titulo}</h3>
+        <p style="color:#555">{descripcion}</p>
+        <p><strong>Fecha límite:</strong> {fecha}</p>
+        <a href="{enlace}" style="display:inline-block;padding:10px 20px;background:#1a73e8;color:white;text-decoration:none;border-radius:5px">
+          Ver tarea en Classroom →
+        </a>
+      </div>
+      <div style="border-top:1px solid #eee;padding:20px;background:#fafafa">
+  <h4 style="color:#34a853">🤖 Sugerencias de Claude</h4>
+  <p style="color:#444;line-height:1.7">{ayuda}</p>
+</div>
+      <div style="background:#f5f5f5;padding:10px;text-align:center;color:#999;font-size:12px">
+        Bot de Classroom · {datetime.now().strftime("%d/%m/%Y %H:%M")}
+      </div>
+    </div>
+    """
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"Nueva tarea: {titulo}"
+    msg["From"]    = EMAIL
+    msg["To"]      = EMAIL
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+        s.login(EMAIL, CONTRASENA_APP)
+        s.sendmail(EMAIL, EMAIL, msg.as_string())
+    print(f"Email enviado: {titulo}")
+
+def revisar(service, vistas):
+    conn = conectar_db()
+    cur = conn.cursor()
+
+    cursos = service.courses().list(courseStates=["ACTIVE"]).execute().get("courses", [])
+    for curso in cursos:
+        if not any(m.lower() in curso["name"].lower() for m in MIS_MATERIAS):
+            continue
+
+        # Guardar curso en la base de datos
+        cur.execute("""
+            INSERT INTO cursos (id, nombre)
+            VALUES (%s, %s)
+            ON CONFLICT (id) DO NOTHING
+        """, (curso["id"], curso["name"]))
+
+        tareas = service.courses().courseWork().list(
+            courseId=curso["id"]
+        ).execute().get("courseWork", [])
+
+        for tarea in tareas:
+            if tarea["id"] not in vistas:
+                print(f" Nueva tarea: {tarea.get('title')} en {curso['name']}")
+
+                # Fecha límite
+                fecha = None
+                if "dueDate" in tarea:
+                    d = tarea["dueDate"]
+                    fecha = f"{d.get('year')}-{d.get('month')}-{d.get('day')}"
+
+                # Guardar tarea en la base de datos
+                cur.execute("""
+                    INSERT INTO tareas (id, curso_id, titulo, descripcion, fecha_limite, puntos, enlace)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                """, (
+                    tarea["id"],
+                    curso["id"],
+                    tarea.get("title", ""),
+                    tarea.get("description", ""),
+                    fecha,
+                    tarea.get("maxPoints"),
+                    tarea.get("alternateLink", "")
+                ))
+
+                # Guardar notificación
+                cur.execute("""
+                    INSERT INTO notificaciones (tarea_id, email_enviado)
+                    VALUES (%s, %s)
+                """, (tarea["id"], False))
+
+                ayuda = pedir_ayuda_claude(tarea.get("title", ""), tarea.get("description", ""))
+                enviar_email(tarea, curso["name"], ayuda)  
+
+                # Actualizar notificación como enviada
+                cur.execute("""
+                    UPDATE notificaciones SET email_enviado = TRUE
+                    WHERE tarea_id = %s
+                """, (tarea["id"],))
+
+                vistas[tarea["id"]] = True
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    return vistas
+
+def main():
+    print("=" * 50)
+    print(" Classroom Bot - Monitor de tareas")
+    print("=" * 50)
+
+    service = autenticar()
+    print("Conectado a Google Classroom\n")
+
+    # Cargar tareas ya vistas
+    vistas = {}
+    if os.path.exists("tareas_vistas.json"):
+        with open("tareas_vistas.json") as f:
+            vistas = json.load(f)
+
+    # Primera pasada: registrar tareas existentes sin avisar
+    print("Registrando tareas actuales...")
+    vistas = revisar(service, vistas)
+    with open("tareas_vistas.json", "w") as f:
+        json.dump(vistas, f)
+    print(f"   ✓ {len(vistas)} tareas registradas. Solo avisaré las NUEVAS.\n")
+
+    print(f"Vigilando cada {INTERVALO_MINUTOS} min. Ctrl+C para detener.\n")
+
+    while True:
+        time.sleep(INTERVALO_MINUTOS * 60)
+        ahora = datetime.now().strftime("%H:%M:%S")
+        print(f"[{ahora}] Revisando...")
+        try:
+            vistas = revisar(service, vistas)
+            with open("tareas_vistas.json", "w") as f:
+                json.dump(vistas, f)
+        except Exception as e:
+            print(f"Error: {e}")
+
+if __name__ == "__main__":
+    main()
 
