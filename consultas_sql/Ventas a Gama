@@ -1,0 +1,67 @@
+select
+      server_origen,
+      "server",
+      barcode,
+      fecha,
+      idmovimiento,
+      nro_factura,
+      anho,
+      mes,
+      nmes,
+      dia,
+      dia_semana,
+      hora,
+      hora2,
+      idsucursal,
+      sucursal,
+      iddeposito,
+      deposito,
+      idmarca,
+      marca,
+      idorigen,
+      origen,
+      idplanventa,
+      planventa,
+      idpersona,
+      ruc,
+      documento_identidad,
+      persona,
+      case idpersona
+          when 1134939 then 'General Bernardo O''Higgins 0 y Eusebio Lillo Robles Arriba de fashion point'
+          when 1134950 then ''
+          when 1146244 then 'CALLE 22 DE SETIEMBRE N° 304 ESQUINA MARISCAL ESTIGARRIBIA'
+          when 1146970 then 'SHOWROOM  - EUSEBIO LILO ROBLES ESQ. GRAL. BERNARDO O''HIGGINS'
+          when 1146997 then 'DEPOSITO CENTRAL - SALVADOR BOGADO CASI CNEL. ALEJO SILVA'
+          when 1148420 then 'SUC. PETROMAX  - AVDA. MARISCAL LOPEZ ESQUINA JOSE E. RODO'
+          when 1178537 then 'SUC. EVENTOS COCINA MOVIL- 22 DE SETIEMBRE ESQ. MCAL. ESTIGARRIBIA'
+          when 1173834 then 'SUC. EXPRESS LAMBARE - AVDA. REPUBLICA ARGENTINA 2467, LAMBARE'
+          when 1183211 then 'SUC. EXPRESS ÑEMBY- AVDA 10 DE AGOSTO ESQ/ SANTA ROSA'
+          else null
+      end as direccion,
+      idfamilia,
+      familia,
+      idlinea,
+      linea,
+      idarticulo,
+      articulo,
+      etiqueta_de_precio,
+      cantidad,
+      gravada,
+      exenta,
+      iva,
+      precio_unitario_sin_descuento,
+      porc_descuento,
+      precio_unitario_con_descuento,
+      total_gravadas,
+      total_exenta,
+      total_gravadas_mas_exenta,
+      total_iva,
+      total_importe,
+      costo_unit_sin_iva,
+      costo_unit_con_iva,
+      costo_total_sin_iva,
+      costo_total_con_iva,
+      factura
+  from
+      info.ventas_movimientos
+  where persona like '%GAMA EM%'
