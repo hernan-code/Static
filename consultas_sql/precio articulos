@@ -1,0 +1,33 @@
+SELECT
+    d.Descripcion as Familia,
+    e.Descripcion as Linea,
+    f.Descripcion as Grupo,
+    c.IdArticulo,
+    c.Descripcion as articulo,
+    a.Precio,
+    b.IdPlanventa,
+    CASE
+      WHEN b.IDPLANVENTA IN(1,2,3,4)  THEN '1 CENTRAL'
+      WHEN b.IDPLANVENTA IN(9,10,11)  THEN '2 CDE'
+      WHEN b.IDPLANVENTA IN(12,13,14) THEN '3 PJC'
+      WHEN b.IDPLANVENTA IN(15,16)    THEN '4 KFC'
+    END AS PLANVENTA,
+    b.Descripcion AS Lista,
+    g.Descripcion AS Franquicia
+FROM PRECIO a
+   INNER JOIN PLANVENTA b ON b.IdPlanventa = a.IdPlanventa
+   INNER JOIN ARTICULO c ON c.IdArticulo = a.IdArticulo
+   INNER JOIN FAMILIAARTICULO d ON d.IdFamilia = c.IdFamilia
+   INNER JOIN LINEA e ON e.IdLinea = c.IdLinea
+   INNER JOIN GRUPOARTICULO f ON f.IdGrupo = c.IdGrupo
+   INNER JOIN FRANQUICIA g ON g.IdFranquicia = c.IdFranquicia
+WHERE
+    COALESCE(a.precio,0) > 0
+    AND c.IdFranquicia LIKE :Franquicia
+    AND c.IdFamilia LIKE :Familia
+    AND c.IdLinea LIKE :Linea
+    AND b.Tipo = 0
+    AND COALESCE(d.IdTipofamilia,0) = 0
+    AND COALESCE(c.Estado_PDV,0) <> 0
+    AND substr(floattostr(a.Precio, '%.0f'), strlen(floattostr(a.Precio, '%.0f')) -1, 2) = '00'
+ORDER BY c.IdFranquicia, d.Descripcion, e.Descripcion, f.Descripcion, c.Descripcion, b.IdPlanventa
