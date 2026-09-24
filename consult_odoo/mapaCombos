@@ -1,0 +1,47 @@
+-- ============================================================================
+-- Mapa: Producto tipo "Combo" -> Producto REAL con receta (grupo "Principal")
+-- PARLA S.A. — Odoo
+-- ============================================================================
+-- Un producto tipo Combo (ej. "Big Bacon (Combo)") no tiene su propia receta.
+-- En su lugar, tiene "Opciones de combo" (grupos: Principal, Acompañamiento,
+-- Bebida a eleccion, Agregado), cada uno con 1 o mas alternativas posibles
+-- (product_combo_item -> product_id).
+--
+-- Este query trae, para cada producto Combo, el/los producto(s) real(es) de
+-- CADA grupo de opcion, para poder decidir en el motor de calculo que receta
+-- usar (normalmente el grupo "Principal" es el que define el producto base
+-- con la receta real de la hamburguesa/plato).
+-- ============================================================================
+
+SELECT
+    pt_combo.id                                                    AS combo_product_tmpl_id,
+    pp_combo.default_code                                          AS combo_referencia,
+    (SELECT value FROM jsonb_each_text(pt_combo."name") LIMIT 1)   AS combo_nombre,
+
+    pc.id                                                          AS grupo_combo_id,
+    pc."name"                                                      AS grupo_combo_nombre,   -- 'Principal', 'Acompañamiento', 'Bebida a elección', 'Agregado'
+    pc.qty_max                                                     AS grupo_qty_max,
+    pc.qty_free                                                    AS grupo_qty_free,       -- cuantas unidades vienen incluidas gratis en el combo
+
+    pci.id                                                         AS opcion_id,
+    pp_opcion.id                                                   AS opcion_product_id,
+    pp_opcion.default_code                                         AS opcion_referencia,
+    (SELECT value FROM jsonb_each_text(pt_opcion."name") LIMIT 1)  AS opcion_nombre,
+    pci.extra_price                                                AS opcion_precio_extra
+
+FROM product_template pt_combo
+JOIN product_combo_product_template_rel rel
+    ON rel.product_template_id = pt_combo.id
+JOIN product_combo pc
+    ON pc.id = rel.product_combo_id
+JOIN product_combo_item pci
+    ON pci.combo_id = pc.id
+JOIN product_product pp_opcion
+    ON pp_opcion.id = pci.product_id
+JOIN product_template pt_opcion
+    ON pt_opcion.id = pp_opcion.product_tmpl_id
+LEFT JOIN product_product pp_combo
+    ON pp_combo.product_tmpl_id = pt_combo.id
+WHERE pt_combo."type" = 'combo'
+
+ORDER BY pt_combo.id, pc.sequence, pci.id;
