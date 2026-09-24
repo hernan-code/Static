@@ -1,0 +1,54 @@
+-- ============================================================================
+-- Recetas (Lista de Materiales) por producto vendido
+-- PARLA S.A. — Odoo
+-- Trae, para cada producto terminado con receta activa, sus ingredientes/insumos
+-- y la cantidad necesaria por unidad producida.
+-- ============================================================================
+
+SELECT
+    -- Producto TERMINADO (lo que se vende, ej. "Big Bacon")
+    pp_final.id                          AS producto_final_id,
+    pp_final.default_code                AS producto_final_referencia,
+    (SELECT value FROM jsonb_each_text(pt_final."name") LIMIT 1) AS producto_final_nombre,
+    bom.product_tmpl_id                  AS producto_final_tmpl_id,
+    bom.id                               AS bom_id,
+    bom.code                             AS bom_codigo,
+    bom."type"                           AS bom_tipo,             -- 'phantom' = Kit (descuenta insumos directo en la venta), otro = fabricacion con orden aparte
+    bom.product_qty                      AS bom_rinde_cantidad,   -- cuantas unidades del producto final rinde esta receta
+    bom.active                           AS bom_activo,
+
+    -- Ingrediente / insumo (componente de la receta)
+    bl.id                                AS linea_receta_id,
+    pp_ingrediente.id                    AS ingrediente_id,
+    pp_ingrediente.default_code          AS ingrediente_referencia,
+    (SELECT value FROM jsonb_each_text(pt_ingrediente."name") LIMIT 1) AS ingrediente_nombre,
+    bl.product_qty                       AS cantidad_por_receta,   -- cantidad de este insumo por cada "bom_rinde_cantidad" del producto final
+    bl.product_uom_id                    AS ingrediente_unidad_id,
+    (SELECT value FROM jsonb_each_text(u."name") LIMIT 1) AS ingrediente_unidad_nombre,
+    bl.s365_es_opcional                  AS es_opcional,
+    bl.s365_es_alternativa               AS es_alternativa,
+    bl.receta_activa                     AS linea_receta_activa,
+    bl.receta_estado                     AS receta_estado,
+    bl.clase_linea                       AS clase_linea,
+    bl.costo_unitario                    AS costo_unitario_insumo,
+    bl.costo_linea                       AS costo_linea
+
+FROM mrp_bom bom
+JOIN mrp_bom_line bl
+    ON bl.bom_id = bom.id
+LEFT JOIN product_product pp_final
+    ON pp_final.id = bom.product_id                       -- si la receta es especifica de una variante
+LEFT JOIN product_template pt_final
+    ON pt_final.id = bom.product_tmpl_id
+LEFT JOIN product_product pp_ingrediente
+    ON pp_ingrediente.id = bl.product_id
+LEFT JOIN product_template pt_ingrediente
+    ON pt_ingrediente.id = bl.product_tmpl_id
+LEFT JOIN uom_uom u
+    ON u.id = bl.product_uom_id
+
+WHERE bom.active IS TRUE
+  -- Opcional: filtrar solo por los productos que vendiste ese dia (mas rapido si la lista es larga)
+  -- AND pp_final.default_code IN ('10427','10419','10408', ...)
+
+ORDER BY bom.product_tmpl_id, bl.sequence;
