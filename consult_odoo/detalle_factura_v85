@@ -1,0 +1,183 @@
+-- ============================================================================
+-- Detalle de facturas cruzado con tickets de POS, por sucursal
+-- PARLA S.A. — Odoo v85 (base NUEVA, estructura distinta a la anterior)
+-- ============================================================================
+-- Antes de correr en produccion, valida los valores reales de estado con:
+--   SELECT DISTINCT state FROM pos_order
+--   SELECT DISTINCT state, move_type FROM account_move
+-- ============================================================================
+-- CAMBIOS respecto al query viejo:
+--   - cfg.branch_id no existe -> se usa company_id (identifica la sucursal igual)
+--   - cfg.establishment / expedition_point no existen -> se sacan del propio
+--     numero de comprobante (l10n_py_full_invoice_number), que ya trae "004-002-NNNNNNN"
+--   - ses.s365_* no existen -> reemplazados por los campos nuevos de sesion
+--   - po.s365_invoice_number/datetime no existen -> removidos
+--   - NUEVO: ses.fecha_negocio (dia operativo real, ya resuelto por Odoo)
+--   - NUEVO: po.monchis_*, po.peya_*, po.factura_anulada, po.modo_consumo
+--   - NUEVO: pol.promocion_id, pol.promocion_patrocinador, pol.pos_opcional_padre_id
+-- ============================================================================
+
+SELECT
+    -- Identificacion de sucursal / caja / sesion
+    cfg.company_id,
+    cfg.name                           AS caja_pos,
+    cfg.numero_caja,
+    cfg.nombre_caja,
+    ses.id                              AS session_id,
+    ses.name                            AS sesion_nombre,
+    ses.turno_id                        AS turno_id,
+    ses.periodo,
+    ses.fecha_negocio,                  -- dia operativo real, ya calculado por Odoo
+    ses.start_at                        AS sesion_apertura,
+    ses.stop_at                         AS sesion_cierre,
+    ses.state                           AS sesion_estado,
+    ses.empleado_nombre,
+
+    -- Ticket de POS
+    po.id                               AS pos_order_id,
+    po.name                             AS pos_order_name,
+    po.pos_reference,
+    po.date_order,
+    po.pricelist_id                     AS pos_pricelist_id,
+    po.state                            AS pos_order_estado,
+    po.to_invoice                       AS pos_marcado_a_facturar,
+    po.is_refund                        AS pos_es_devolucion,
+    po.amount_total                     AS pos_monto_total,
+    po.factura_anulada,
+    po.modo_consumo,
+
+    -- Canal / plataforma de delivery, identificado directo (antes habia que adivinar)
+    po.source                           AS pos_origen,
+    po.monchis_pedido_id,
+    po.monchis_plataforma_id,
+    po.monchis_estado,
+    po.peya_pedido_id,
+    po.peya_tienda_id,
+    po.peya_codigo,
+    po.peya_estado,
+
+    -- Factura / comprobante fiscal (account_move)
+    am.id                                AS invoice_id,
+    am.name                              AS numero_comprobante,
+    am.state                             AS factura_estado,          -- draft / posted / cancel
+    am.move_type                         AS tipo_documento,          -- out_invoice / out_refund / entry
+    am."date"                            AS fecha_contable,
+    am.invoice_date                      AS fecha_factura,
+    am.amount_total                      AS factura_monto_total,
+    am.l10n_py_authorization_id         AS timbrado_id,
+    am.l10n_py_invoice_number           AS numero_timbrado_secuencial,
+    am.l10n_py_full_invoice_number      AS numero_comprobante_completo,
+    am.condicion_venta,                 -- contado / credito
+    am.reversed_pos_order_id            AS anula_a_pos_order_id,
+    am.excluir_de_libros,
+
+    -- Bandera de conciliacion, calculada
+    CASE
+        WHEN po.id IS NOT NULL AND am.id IS NULL THEN 'TICKET SIN FACTURAR'
+        WHEN po.id IS NULL AND am.id IS NOT NULL THEN 'FACTURA SIN TICKET POS (manual)'
+        WHEN am.state = 'cancel' THEN 'FACTURA ANULADA'
+        WHEN am.move_type = 'out_refund' THEN 'NOTA DE CREDITO'
+        WHEN am.state = 'posted' THEN 'FACTURADO OK'
+        WHEN am.state = 'draft' THEN 'FACTURA EN BORRADOR'
+        ELSE 'REVISAR'
+    END                                  AS estado_conciliacion,
+
+    -- Detalle de item vendido segun el TICKET de POS (pos_order_line) — una fila por producto.
+    pol.id                               AS pos_order_line_id,
+    pol.product_id                       AS pos_line_product_id,
+    pp.default_code                      AS pos_line_referencia,
+    pol."name"                           AS pos_producto_descripcion,
+    pol.qty                              AS pos_cantidad,
+    pol.price_unit                       AS pos_precio_unitario,
+    pol.discount                         AS pos_descuento_pct,
+    pol.price_subtotal                   AS pos_subtotal_sin_iva,
+    pol.price_subtotal_incl              AS pos_subtotal_con_iva,
+    pol.settled_invoice_id               AS pos_linea_facturada_en_invoice_id,
+
+    -- Combo: si combo_parent_id NO es null, esta linea es un COMPONENTE de un combo
+    pol.combo_parent_id                  AS pos_combo_parent_id,
+    pol.combo_id                         AS pos_combo_id,
+    pol.combo_item_id                    AS pos_combo_item_id,
+
+    -- Opcional de combo, ahora marcado DIRECTO en la linea (antes habia que inferirlo
+    -- de mrp_bom_line.clase_linea; esto es mas confiable, viene del pedido real)
+    pol.pos_opcional_padre_id,
+    pol.pos_opcional_secuencia,
+
+    -- Promocion, ahora marcada DIRECTO en la linea de venta (antes habia que adivinar
+    -- por codigo de producto duplicado tipo "13082")
+    pol.promocion_id,
+    pol.promocion_patrocinador,
+
+    -- Vale de canje / loyalty
+    pol.reward_id                        AS pos_reward_id,
+    pol.coupon_id                        AS pos_coupon_id,
+    pol.is_reward_line                   AS pos_es_linea_de_premio,
+    pol."notice"                         AS pos_nota_linea,
+    pol.customer_note                    AS pos_nota_cliente,
+
+    -- Clasificacion automatica de la linea
+    CASE
+        WHEN pol.combo_parent_id IS NOT NULL THEN 'COMBO_HIJO (no es cortesia, ya cobrado en el padre)'
+        WHEN pol.promocion_id IS NOT NULL THEN 'PROMOCION'
+        WHEN pol.is_reward_line IS TRUE OR pol.reward_id IS NOT NULL OR pol.coupon_id IS NOT NULL THEN 'VALE_CANJE / LOYALTY'
+        WHEN pol.price_subtotal_incl = 0 THEN 'CANDIDATO_CORTESIA (revisar)'
+        ELSE 'VENTA_NORMAL'
+    END                                   AS pos_clasificacion_linea,
+
+    -- Detalle real de la FACTURA completa (account_move_line), agregado en un solo campo JSON
+    ml.lineas_factura                    AS invoice_lineas_json,
+    ml.cantidad_lineas_factura           AS invoice_cantidad_lineas,
+    ml.total_facturado_lineas            AS invoice_total_lineas_sin_iva
+
+FROM pos_order po
+FULL OUTER JOIN account_move am
+    ON am.id = po.account_move
+LEFT JOIN pos_session ses
+    ON ses.id = po.session_id
+LEFT JOIN pos_config cfg
+    ON cfg.id = po.config_id
+LEFT JOIN pos_order_line pol
+    ON pol.order_id = po.id
+LEFT JOIN product_product pp
+    ON pp.id = pol.product_id
+LEFT JOIN LATERAL (
+    SELECT array_agg(DISTINCT pol2.product_id) AS productos_combo_hijo
+    FROM pos_order_line pol2
+    JOIN pos_order po2 ON po2.id = pol2.order_id
+    WHERE (po2.account_move = am.id OR pol2.settled_invoice_id = am.id)
+      AND pol2.combo_parent_id IS NOT NULL
+) combo_info ON am.id IS NOT NULL
+LEFT JOIN LATERAL (
+    SELECT
+        json_agg(json_build_object(
+            'producto_id', aml.product_id,
+            'referencia', pp2.default_code,
+            'descripcion', aml."name",
+            'cantidad', aml.quantity,
+            'precio_unitario', aml.price_unit,
+            'descuento_pct', aml.discount,
+            'subtotal_sin_iva', aml.price_subtotal,
+            'subtotal_con_iva', aml.price_total,
+            'combo_hijo', aml.product_id = ANY(COALESCE(combo_info.productos_combo_hijo, ARRAY[]::int4[]))
+        ) ORDER BY aml.id)               AS lineas_factura,
+        COUNT(*)                          AS cantidad_lineas_factura,
+        SUM(aml.price_subtotal)          AS total_facturado_lineas
+    FROM account_move_line aml
+    LEFT JOIN product_product pp2 ON pp2.id = aml.product_id
+    WHERE aml.move_id = am.id
+      AND aml.product_id IS NOT NULL
+) ml ON am.id IS NOT NULL
+
+WHERE (
+    po.date_order BETWEEN :fecha_desde AND :fecha_hasta
+    OR am.invoice_date BETWEEN :fecha_desde AND :fecha_hasta
+    OR am."date" BETWEEN :fecha_desde AND :fecha_hasta
+)
+  AND (am.id IS NULL OR am.move_type IN ('out_invoice', 'out_refund'))
+
+ORDER BY
+    cfg.company_id,
+    COALESCE(po.date_order, am.invoice_date),
+    po.id,
+    pol.id;
