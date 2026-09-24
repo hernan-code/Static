@@ -1,0 +1,206 @@
+-- ============================================================================
+-- Detalle de facturas cruzado con tickets de POS, por sucursal
+-- PARLA S.A. — Odoo
+-- ============================================================================
+-- Antes de correr en produccion, valida los valores reales de estado con:
+--   SELECT DISTINCT state FROM pos_order
+--   SELECT DISTINCT state, move_type FROM account_move
+-- porque no tengo el catalogo de valores, solo el DDL.
+-- ============================================================================
+
+SELECT
+    -- Identificacion de sucursal / caja / sesion
+    cfg.branch_id,
+    cfg.name                           AS caja_pos,
+    cfg.establishment                  AS establecimiento,
+    cfg.expedition_point               AS punto_expedicion,
+    ses.id                              AS session_id,
+    ses.s365_session_number            AS numero_sesion,
+    ses.s365_turno                     AS turno,
+    ses.s365_caja                      AS caja_codigo,
+    ses.start_at                       AS sesion_apertura,
+    ses.stop_at                        AS sesion_cierre,
+    ses.state                          AS sesion_estado,
+
+    -- Ticket de POS
+    po.id                               AS pos_order_id,
+    po.name                             AS pos_order_name,
+    po.pos_reference,
+    po.date_order,
+    po.pricelist_id                     AS pos_pricelist_id,
+    po.state                            AS pos_order_estado,
+    po.to_invoice                       AS pos_marcado_a_facturar,
+    po.is_refund                        AS pos_es_devolucion,
+    po.amount_total                     AS pos_monto_total,
+    po.s365_invoice_number             AS pos_numero_factura_txt,
+    po.s365_invoice_datetime           AS pos_fecha_facturacion,
+
+    -- Factura / comprobante fiscal (account_move)
+    am.id                                AS invoice_id,
+    am.name                              AS numero_comprobante,
+    am.state                             AS factura_estado,          -- draft / posted / cancel
+    am.move_type                         AS tipo_documento,          -- out_invoice / out_refund / entry
+    am."date"                            AS fecha_contable,
+    am.invoice_date                      AS fecha_factura,
+    am.amount_total                      AS factura_monto_total,
+    am.l10n_py_authorization_id         AS timbrado_id,
+    am.l10n_py_invoice_number           AS numero_timbrado_secuencial,
+    am.l10n_py_full_invoice_number      AS numero_comprobante_completo,
+    am.l10n_py_condicion                AS condicion_venta,          -- contado / credito
+    am.reversed_pos_order_id            AS anula_a_pos_order_id,     -- si es una NC/anulacion de otra orden
+
+    -- Bandera de conciliacion, calculada
+    CASE
+        WHEN po.id IS NOT NULL AND am.id IS NULL THEN 'TICKET SIN FACTURAR'
+        WHEN po.id IS NULL AND am.id IS NOT NULL THEN 'FACTURA SIN TICKET POS (manual)'
+        WHEN am.state = 'cancel' THEN 'FACTURA ANULADA'
+        WHEN am.move_type = 'out_refund' THEN 'NOTA DE CREDITO'
+        WHEN am.state = 'posted' THEN 'FACTURADO OK'
+        WHEN am.state = 'draft' THEN 'FACTURA EN BORRADOR'
+        ELSE 'REVISAR'
+    END                                  AS estado_conciliacion,
+
+    -- Detalle de item vendido segun el TICKET de POS (pos_order_line) — una fila por producto.
+    -- Esta es la granularidad principal del resultado (1 fila = 1 producto vendido en el ticket).
+    -- settled_invoice_id: si esta linea puntual quedo asentada en una factura DISTINTA
+    -- a la que aparece en po.account_move (caso de facturas con multiples pos_order).
+    pol.id                               AS pos_order_line_id,
+    pol.product_id                       AS pos_line_product_id,
+    pp.default_code                      AS pos_line_referencia,
+    pol."name"                           AS pos_producto_descripcion,
+    pol.qty                              AS pos_cantidad,
+    pol.price_unit                       AS pos_precio_unitario,
+    pol.discount                         AS pos_descuento_pct,
+    pol.price_subtotal                   AS pos_subtotal_sin_iva,
+    pol.price_subtotal_incl              AS pos_subtotal_con_iva,
+    pol.settled_invoice_id               AS pos_linea_facturada_en_invoice_id,
+
+    -- Combo: si combo_parent_id NO es null, esta linea es un COMPONENTE de un combo
+    -- (el precio ya se cobro en la linea padre, price=0 aca es normal, no es cortesia).
+    pol.combo_parent_id                  AS pos_combo_parent_id,
+    pol.combo_id                         AS pos_combo_id,
+    pol.combo_item_id                    AS pos_combo_item_id,
+
+    -- Vale de canje / loyalty: si reward_id o coupon_id tienen valor, o is_reward_line=true,
+    -- la linea viene de un programa de fidelizacion/cupon, no es una cortesia discrecional.
+    pol.reward_id                        AS pos_reward_id,
+    pol.coupon_id                        AS pos_coupon_id,
+    pol.is_reward_line                   AS pos_es_linea_de_premio,
+    pol."notice"                         AS pos_nota_linea,
+    pol.customer_note                    AS pos_nota_cliente,
+
+    -- Clasificacion automatica de la linea, para no tener que adivinar por precio=0:
+    CASE
+        WHEN pol.combo_parent_id IS NOT NULL THEN 'COMBO_HIJO (no es cortesia, ya cobrado en el padre)'
+        WHEN pol.is_reward_line IS TRUE OR pol.reward_id IS NOT NULL OR pol.coupon_id IS NOT NULL THEN 'VALE_CANJE / LOYALTY'
+        WHEN pol.price_subtotal_incl = 0 THEN 'CANDIDATO_CORTESIA (revisar)'
+        ELSE 'VENTA_NORMAL'
+    END                                   AS pos_clasificacion_linea,
+
+    -- Precio de LISTA vigente al momento de la venta (product_pricelist_item), segun la
+    -- lista de precios asignada al pedido (po.pricelist_id) y la fecha real del pedido.
+    -- Si compute_price no es 'fixed' (ej. descuento %, markup), fixed_price puede venir NULL:
+    -- revisar precio_lista_compute_price para saber como se calcula en ese caso.
+    -- Precio de LISTA: DESACTIVADO en este query por rendimiento (el LATERAL de abajo
+    -- escanea product_pricelist_item por cada linea de pedido -> timeout con >50k filas).
+    -- Se resuelve aparte con un query mas chico, agregado por Referencia+Sucursal (no por linea).
+    -- precio_lista.nombre_lista            AS precio_lista_nombre,
+    -- precio_lista.fixed_price             AS precio_lista_fijo,
+    -- precio_lista.compute_price           AS precio_lista_compute_price,
+    -- precio_lista.price_discount          AS precio_lista_descuento_pct,
+    -- precio_lista.applied_on              AS precio_lista_aplicado_sobre,
+
+    -- Detalle real de la FACTURA completa (account_move_line), agregado en un solo campo JSON
+    -- por factura -- se repite igual en cada fila del mismo invoice_id, no se debe sumar
+    -- directamente sin desanidar. Evita el problema de multiplicar filas al cruzar dos
+    -- detalles (pos_order_line x account_move_line) que no tienen relacion 1 a 1 entre si.
+    -- pp.default_code = "Referencia" del producto (la que usan las integraciones PedidosYa/Monchis)
+    ml.lineas_factura                    AS invoice_lineas_json,
+    ml.cantidad_lineas_factura           AS invoice_cantidad_lineas,
+    ml.total_facturado_lineas            AS invoice_total_lineas_sin_iva
+
+FROM pos_order po
+FULL OUTER JOIN account_move am
+    ON am.id = po.account_move
+LEFT JOIN pos_session ses
+    ON ses.id = po.session_id
+LEFT JOIN pos_config cfg
+    ON cfg.id = po.config_id
+LEFT JOIN pos_order_line pol
+    ON pol.order_id = po.id
+LEFT JOIN product_product pp
+    ON pp.id = pol.product_id
+-- Precio de lista DESACTIVADO por rendimiento -- ver query separado mas abajo en comentario.
+-- LEFT JOIN LATERAL (
+--     SELECT
+--         (SELECT value FROM jsonb_each_text(pl."name") LIMIT 1)   AS nombre_lista,
+--         ppi.fixed_price,
+--         ppi.compute_price,
+--         ppi.price_discount,
+--         ppi.applied_on
+--     FROM product_pricelist_item ppi
+--     JOIN product_pricelist pl ON pl.id = ppi.pricelist_id
+--     WHERE ppi.pricelist_id = po.pricelist_id
+--       AND (
+--             ppi.product_id = pol.product_id
+--          OR ppi.product_tmpl_id = pp.product_tmpl_id
+--          OR ppi.applied_on = '3_global'
+--       )
+--       AND (ppi.date_start IS NULL OR ppi.date_start <= po.date_order)
+--       AND (ppi.date_end   IS NULL OR ppi.date_end   >= po.date_order)
+--     ORDER BY
+--         CASE WHEN ppi.product_id = pol.product_id THEN 0
+--              WHEN ppi.product_tmpl_id = pp.product_tmpl_id THEN 1
+--              ELSE 2 END,
+--         ppi.date_start DESC NULLS LAST
+--     LIMIT 1
+-- ) precio_lista ON po.pricelist_id IS NOT NULL AND pol.id IS NOT NULL
+LEFT JOIN LATERAL (
+    -- productos de esta factura que son componentes de combo (se calcula 1 vez por factura,
+    -- no por linea, para que sea rapido)
+    SELECT array_agg(DISTINCT pol2.product_id) AS productos_combo_hijo
+    FROM pos_order_line pol2
+    JOIN pos_order po2 ON po2.id = pol2.order_id
+    WHERE (po2.account_move = am.id OR pol2.settled_invoice_id = am.id)
+      AND pol2.combo_parent_id IS NOT NULL
+) combo_info ON am.id IS NOT NULL
+LEFT JOIN LATERAL (
+    SELECT
+        json_agg(json_build_object(
+            'producto_id', aml.product_id,
+            'referencia', pp2.default_code,
+            'descripcion', aml."name",
+            'cantidad', aml.quantity,
+            'precio_unitario', aml.price_unit,
+            'descuento_pct', aml.discount,
+            'subtotal_sin_iva', aml.price_subtotal,
+            'subtotal_con_iva', aml.price_total,
+            'combo_hijo', aml.product_id = ANY(COALESCE(combo_info.productos_combo_hijo, ARRAY[]::int4[]))
+        ) ORDER BY aml.id)               AS lineas_factura,
+        COUNT(*)                          AS cantidad_lineas_factura,
+        SUM(aml.price_subtotal)          AS total_facturado_lineas
+    FROM account_move_line aml
+    LEFT JOIN product_product pp2 ON pp2.id = aml.product_id
+    WHERE aml.move_id = am.id
+      AND aml.product_id IS NOT NULL     -- excluye impuestos, contrapartida contable, secciones/notas
+) ml ON am.id IS NOT NULL
+
+-- Filtro de periodo por parametro (DBeaver abre una ventana flotante para completar el valor)
+-- Formato esperado al tipear en la ventana: 2026-08-01
+-- OJO: se filtra por date_order O por invoice_date (no COALESCE) para no perder facturas
+-- cuyo pedido se creo mucho antes de facturarse (facturacion demorada varios dias, no solo
+-- el cruce de medianoche de una sesion).
+WHERE (
+    po.date_order BETWEEN :fecha_desde AND :fecha_hasta
+    OR am.invoice_date BETWEEN :fecha_desde AND :fecha_hasta
+    OR am."date" BETWEEN :fecha_desde AND :fecha_hasta
+)
+  -- Solo documentos de VENTA: excluye compras (in_invoice/in_refund) y asientos contables varios (entry).
+  -- am.id IS NULL deja pasar los tickets de POS que todavia no tienen ninguna factura.
+  AND (am.id IS NULL OR am.move_type IN ('out_invoice', 'out_refund'))
+
+ORDER BY
+    cfg.branch_id,
+    COALESCE(po.date_order, am.invoice_date),
+    po.id,
+    pol.id;
