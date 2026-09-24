@@ -1,0 +1,56 @@
+-- ============================================================================
+-- Recetas (Lista de Materiales) por producto vendido
+-- PARLA S.A. — Odoo v85 (base NUEVA)
+-- Trae, para cada producto terminado con receta activa, sus ingredientes/insumos
+-- y la cantidad necesaria por unidad producida.
+-- ============================================================================
+-- CAMBIOS respecto al query viejo (v65):
+--   - mrp_bom_line en esta base es una tabla ESTANDAR de Odoo, sin los campos
+--     custom que teniamos antes (s365_es_opcional, clase_linea, costo_unitario, etc.)
+--   - Hipotesis a confirmar: las "Alternativas de cambio" y "Opcionales de combo"
+--     que se ven como pestañas separadas en la ficha del producto viven en OTRAS
+--     tablas (no en mrp_bom_line), por lo que esta consulta ya traeria solo los
+--     COMPONENTES reales de la receta, sin necesidad de filtrar clase_linea.
+--     -> Validar esto con un producto conocido (ej. Sandwich de Lomito Doble XL)
+--        y comparar contra lo que se ve en pantalla en la pestaña "Componentes".
+-- ============================================================================
+
+SELECT
+    -- Producto TERMINADO (lo que se vende, ej. "Big Bacon")
+    pp_final.id                          AS producto_final_id,
+    pp_final.default_code                AS producto_final_referencia,
+    (SELECT value FROM jsonb_each_text(pt_final."name") LIMIT 1) AS producto_final_nombre,
+    bom.product_tmpl_id                  AS producto_final_tmpl_id,
+    bom.id                               AS bom_id,
+    bom.code                             AS bom_codigo,
+    bom."type"                           AS bom_tipo,             -- 'phantom' = Kit (descuenta insumos directo en la venta), otro = fabricacion con orden aparte
+    bom.product_qty                      AS bom_rinde_cantidad,   -- cuantas unidades del producto final rinde esta receta
+    bom.active                           AS bom_activo,
+
+    -- Ingrediente / insumo (componente de la receta)
+    bl.id                                AS linea_receta_id,
+    pp_ingrediente.id                    AS ingrediente_id,
+    pp_ingrediente.default_code          AS ingrediente_referencia,
+    (SELECT value FROM jsonb_each_text(pt_ingrediente."name") LIMIT 1) AS ingrediente_nombre,
+    bl.product_qty                       AS cantidad_por_receta,   -- cantidad de este insumo por cada "bom_rinde_cantidad" del producto final
+    bl.product_uom_id                    AS ingrediente_unidad_id,
+    (SELECT value FROM jsonb_each_text(u."name") LIMIT 1) AS ingrediente_unidad_nombre,
+    bl.cost_share                        AS costo_share
+
+FROM mrp_bom bom
+JOIN mrp_bom_line bl
+    ON bl.bom_id = bom.id
+LEFT JOIN product_product pp_final
+    ON pp_final.id = bom.product_id                       -- si la receta es especifica de una variante
+LEFT JOIN product_template pt_final
+    ON pt_final.id = bom.product_tmpl_id
+LEFT JOIN product_product pp_ingrediente
+    ON pp_ingrediente.id = bl.product_id
+LEFT JOIN product_template pt_ingrediente
+    ON pt_ingrediente.id = bl.product_tmpl_id
+LEFT JOIN uom_uom u
+    ON u.id = bl.product_uom_id
+
+WHERE bom.active IS TRUE
+
+ORDER BY bom.product_tmpl_id, bl.sequence;
