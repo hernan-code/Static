@@ -1,0 +1,9 @@
+-- ============================================================================
+-- Diagnostico: columnas reales de mrp_bom y mrp_bom_line en la base nueva (v85)
+-- ============================================================================
+
+SELECT table_name, column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name IN ('mrp_bom', 'mrp_bom_line')
+ORDER BY table_name, ordinal_position;
