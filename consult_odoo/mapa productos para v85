@@ -1,0 +1,19 @@
+-- ============================================================================
+-- Mapa Producto (variante) <-> Plantilla <-> Referencia <-> Nombre <-> Unidad
+-- PARLA S.A. — Odoo
+-- Version completa: igual a la vista "Productos" de Odoo (Nombre, ID, Referencia, Unidad)
+-- ============================================================================
+
+SELECT
+    pp.id                                                    AS product_id,
+    pp.product_tmpl_id,
+    pp.default_code                                          AS referencia,
+    -- el nombre es jsonb multi-idioma (ej. {"es_PY": "Big Bacon"}); tomamos el primer valor cargado
+    (SELECT value FROM jsonb_each_text(pt."name") LIMIT 1)   AS nombre_producto,
+    pt.list_price                                             AS precio_venta,
+    (SELECT value FROM jsonb_each_text(u."name") LIMIT 1)    AS unidad_nombre,
+    u.id                                                      AS unidad_id
+FROM product_product pp
+JOIN product_template pt ON pt.id = pp.product_tmpl_id
+LEFT JOIN uom_uom u ON u.id = pt.uom_id
+WHERE pp.default_code IS NOT NULL;
