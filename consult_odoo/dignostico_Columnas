@@ -1,0 +1,10 @@
+-- ============================================================================
+-- Diagnostico: ver que columnas existen realmente en la base nueva
+-- Corre esto ANTES de tocar el query grande, para no seguir adivinando.
+-- ============================================================================
+
+SELECT table_name, column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name IN ('pos_config', 'pos_session', 'pos_order', 'pos_order_line', 'account_move', 'account_move_line')
+ORDER BY table_name, ordinal_position;
